@@ -137,7 +137,7 @@ impl MemoryBackend {
     pub fn run_gc(
         &self,
         idle: bool,
-        _turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
+        turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) -> bool {
         if let Some(gc_queue) = &self.gc_queue {
             let mut did_something = false;
@@ -154,7 +154,7 @@ impl MemoryBackend {
                     return did_something;
                 }
 
-                let collected = gc_queue.run_gc(self);
+                let collected = gc_queue.run_gc(self, turbo_tasks);
 
                 // Collecting less than 100 tasks is not worth it
                 if !collected.map_or(false, |(_, count)| count > 100) {
@@ -332,19 +332,25 @@ impl Backend for MemoryBackend {
         } else {
             0
         };
-        let reexecute = self.with_task(task_id, |task| {
-            task.execution_completed(
-                duration,
-                memory_usage,
-                generation,
-                stateful,
-                self,
-                turbo_tasks,
+        let (reexecute, once_task) = self.with_task(task_id, |task| {
+            (
+                task.execution_completed(
+                    duration,
+                    memory_usage,
+                    generation,
+                    stateful,
+                    self,
+                    turbo_tasks,
+                ),
+                task.is_once(),
             )
         });
         if !reexecute {
             if let Some(gc_queue) = &self.gc_queue {
-                gc_queue.task_executed(task_id);
+                let _ = gc_queue.task_executed(task_id);
+                if once_task {
+                    gc_queue.task_potentially_no_longer_active(task_id);
+                }
                 self.run_gc(false, turbo_tasks);
             }
         }
@@ -402,7 +408,7 @@ impl Backend for MemoryBackend {
         } else {
             Task::add_dependency_to_current(TaskEdge::Cell(task_id, index));
             self.with_task(task_id, |task| {
-                match task.with_cell_mut(index, self.gc_queue.as_ref(), |cell| {
+                match task.with_cell_mut(index, self.gc_queue.as_ref(), |cell, _| {
                     cell.read_content(
                         reader,
                         move || format!("{task_id} {index}"),
@@ -439,7 +445,7 @@ impl Backend for MemoryBackend {
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) -> Result<Result<CellContent, EventListener>> {
         self.with_task(task_id, |task| {
-            match task.with_cell_mut(index, self.gc_queue.as_ref(), |cell| {
+            match task.with_cell_mut(index, self.gc_queue.as_ref(), |cell, _| {
                 cell.read_content_untracked(
                     move || format!("{task_id}"),
                     move || format!("reading {} {} untracked", task_id, index),
@@ -499,8 +505,8 @@ impl Backend for MemoryBackend {
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) {
         self.with_task(task, |task| {
-            task.with_cell_mut(index, self.gc_queue.as_ref(), |cell| {
-                cell.assign(content, turbo_tasks)
+            task.with_cell_mut(index, self.gc_queue.as_ref(), |cell, clean| {
+                cell.assign(content, clean, turbo_tasks)
             })
         })
     }

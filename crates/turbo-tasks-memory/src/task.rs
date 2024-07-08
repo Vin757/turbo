@@ -187,6 +187,7 @@ impl TaskState {
             state_type: Scheduled {
                 event: Event::new(move || format!("TaskState({})::event", description())),
                 outdated_edges: Default::default(),
+                clean: true,
             },
             collectibles: Default::default(),
             output: Default::default(),
@@ -310,6 +311,8 @@ impl MaybeCollectibles {
 struct InProgressState {
     event: Event,
     count_as_finished: bool,
+    /// true, when the task wasn't changed since the last execution
+    clean: bool,
     /// Dependencies and children that need to be disconnected once leaving
     /// this state
     outdated_edges: TaskEdgesSet,
@@ -346,6 +349,8 @@ enum TaskStateType {
     Scheduled {
         event: Event,
         outdated_edges: Box<TaskEdgesSet>,
+        /// true, when the task wasn't changed since the last execution
+        clean: bool,
     },
 
     /// Execution is happening
@@ -427,6 +432,13 @@ use self::{
     },
 };
 
+pub enum GcResult {
+    NotPossible,
+    Stale,
+    ContentDropped,
+    Unloaded,
+}
+
 impl Task {
     pub(crate) fn new_persistent(
         id: TaskId,
@@ -478,6 +490,14 @@ impl Task {
             TaskType::Persistent { .. } => true,
             TaskType::Root(_) => false,
             TaskType::Once(_) => false,
+        }
+    }
+
+    pub(crate) fn is_once(&self) -> bool {
+        match &self.ty {
+            TaskType::Persistent { .. } => false,
+            TaskType::Root(_) => false,
+            TaskType::Once(_) => true,
         }
     }
 
@@ -669,6 +689,7 @@ impl Task {
                 Scheduled {
                     ref mut event,
                     ref mut outdated_edges,
+                    clean,
                 } => {
                     let event = event.take();
                     let outdated_edges = *take(outdated_edges);
@@ -676,6 +697,7 @@ impl Task {
                     state.state_type = InProgress(Box::new(InProgressState {
                         event,
                         count_as_finished: false,
+                        clean,
                         outdated_edges,
                         outdated_collectibles,
                         new_children: Default::default(),
@@ -889,6 +911,7 @@ impl Task {
                         ref mut outdated_edges,
                         ref mut outdated_collectibles,
                         ref mut new_children,
+                        clean: _,
                     }) => {
                         let event = event.take();
                         let mut outdated_edges = take(outdated_edges);
@@ -953,6 +976,7 @@ impl Task {
                         state.state_type = Scheduled {
                             event,
                             outdated_edges: Box::new(outdated_edges),
+                            clean: false,
                         };
                         schedule_task = true;
                     }
@@ -989,7 +1013,7 @@ impl Task {
 
     fn make_dirty_internal(
         &self,
-        force_schedule: bool,
+        recomputing: bool,
         backend: &MemoryBackend,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) {
@@ -999,10 +1023,10 @@ impl Task {
         }
 
         let mut aggregation_context = TaskAggregationContext::new(turbo_tasks, backend);
-        let should_schedule = force_schedule
-            || query_root_info(&aggregation_context, ActiveQuery::default(), self.id);
+        let should_schedule =
+            recomputing || query_root_info(&aggregation_context, ActiveQuery::default(), self.id);
 
-        let state = if force_schedule {
+        let state = if recomputing {
             TaskMetaStateWriteGuard::Full(self.full_state_mut())
         } else {
             self.state_mut()
@@ -1016,13 +1040,14 @@ impl Task {
                 Dirty {
                     ref mut outdated_edges,
                 } => {
-                    if force_schedule {
+                    if recomputing {
                         let description = self.get_event_description();
                         state.state_type = Scheduled {
                             event: Event::new(move || {
                                 format!("TaskState({})::event", description())
                             }),
                             outdated_edges: take(outdated_edges),
+                            clean: false,
                         };
                         let change_job = state.aggregation_node.apply_change(
                             &aggregation_context,
@@ -1058,6 +1083,7 @@ impl Task {
                                 format!("TaskState({})::event", description())
                             }),
                             outdated_edges: Box::new(outdated_edges),
+                            clean: recomputing,
                         };
                         drop(state);
                         change_job.apply(&aggregation_context);
@@ -1090,6 +1116,7 @@ impl Task {
                     ref mut outdated_edges,
                     ref mut outdated_collectibles,
                     ref mut new_children,
+                    clean: _,
                 }) => {
                     let event = event.take();
                     let mut outdated_edges = take(outdated_edges);
@@ -1153,6 +1180,7 @@ impl Task {
             state.state_type = Scheduled {
                 event: Event::new(move || format!("TaskState({})::event", description())),
                 outdated_edges: take(outdated_edges),
+                clean: false,
             };
             let job = state.aggregation_node.apply_change(
                 &aggregation_context,
@@ -1219,21 +1247,25 @@ impl Task {
         &self,
         index: CellId,
         gc_queue: Option<&GcQueue>,
-        func: impl FnOnce(&mut Cell) -> T,
+        func: impl FnOnce(&mut Cell, bool) -> T,
     ) -> T {
         let mut state = self.full_state_mut();
         if let Some(gc_queue) = gc_queue {
             let generation = gc_queue.generation();
             if state.gc.on_read(generation) {
-                gc_queue.task_accessed(self.id);
+                let _ = gc_queue.task_accessed(self.id);
             }
         }
+        let clean = match state.state_type {
+            InProgress(box InProgressState { clean, .. }) => clean,
+            _ => false,
+        };
         let list = state.cells.entry(index.type_id).or_default();
         let i = index.index as usize;
         if list.len() <= i {
             list.resize_with(i + 1, Default::default);
         }
-        func(&mut list[i])
+        func(&mut list[i], clean)
     }
 
     /// Access to a cell.
@@ -1260,6 +1292,30 @@ impl Task {
         } else {
             func(&Default::default())
         }
+    }
+
+    /// Checks if the task is inactive. Returns false if it's still active.
+    pub(crate) fn potentially_become_inactive(
+        &self,
+        gc_queue: &GcQueue,
+        backend: &MemoryBackend,
+        turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
+    ) -> bool {
+        let aggregation_context = TaskAggregationContext::new(turbo_tasks, backend);
+        let active = query_root_info(&aggregation_context, ActiveQuery::default(), self.id);
+        if active {
+            return false;
+        }
+        if let TaskMetaStateWriteGuard::Full(mut state) = self.state_mut() {
+            if state.gc.generation != 0 {
+                let generation = gc_queue.task_inactive(self.id);
+                state.gc.generation = generation;
+            }
+            for child in state.state_type.children() {
+                gc_queue.task_potentially_no_longer_active(child);
+            }
+        }
+        true
     }
 
     pub fn is_pending(&self) -> bool {
@@ -1425,6 +1481,7 @@ impl Task {
                 state.state_type = Scheduled {
                     event,
                     outdated_edges: take(outdated_edges),
+                    clean: false,
                 };
                 let change_job = state.aggregation_node.apply_change(
                     &aggregation_context,
@@ -1506,57 +1563,76 @@ impl Task {
         aggregation_context.apply_queued_updates();
     }
 
-    pub(crate) fn run_gc(&self, generation: u32) -> bool {
+    pub(crate) fn run_gc(
+        &self,
+        generation: u32,
+        gc_queue: &GcQueue,
+        backend: &MemoryBackend,
+        turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
+    ) -> GcResult {
         if !self.is_pure() {
-            return false;
+            return GcResult::NotPossible;
         }
 
-        let mut cells_to_drop = Vec::new();
+        let aggregation_context = TaskAggregationContext::new(turbo_tasks, backend);
+        let active = query_root_info(&aggregation_context, ActiveQuery::default(), self.id);
 
         match self.state_mut() {
             TaskMetaStateWriteGuard::Full(mut state) => {
-                if state.gc.generation > generation {
-                    return false;
-                }
+                if active {
+                    let mut cells_to_drop = Vec::new();
 
-                match &mut state.state_type {
-                    TaskStateType::Done { stateful, edges: _ } => {
-                        if *stateful {
-                            return false;
+                    if state.gc.generation == 0 || state.gc.generation > generation {
+                        return GcResult::Stale;
+                    }
+                    state.gc.generation = 0;
+
+                    match &mut state.state_type {
+                        TaskStateType::Done { stateful, edges: _ } => {
+                            if *stateful {
+                                return GcResult::NotPossible;
+                            }
+                        }
+                        TaskStateType::Dirty { .. } => {}
+                        _ => {
+                            // GC can't run in this state. We will reschedule it when the execution
+                            // completes.
+                            return GcResult::NotPossible;
                         }
                     }
-                    TaskStateType::Dirty { .. } => {}
-                    _ => {
-                        // GC can't run in this state. We will reschedule it when the execution
-                        // completes.
-                        return false;
+
+                    // shrinking memory and dropping cells
+                    state.aggregation_node.shrink_to_fit();
+                    state.output.dependent_tasks.shrink_to_fit();
+                    state.cells.shrink_to_fit();
+                    for cells in state.cells.values_mut() {
+                        cells.shrink_to_fit();
+                        for cell in cells.iter_mut() {
+                            cells_to_drop.extend(cell.gc_content());
+                            cell.shrink_to_fit();
+                        }
                     }
+
+                    drop(state);
+
+                    gc_queue.task_gc_active(self.id);
+
+                    // Dropping cells outside of the lock
+                    drop(cells_to_drop);
+
+                    GcResult::ContentDropped
+                } else {
+                    // Task is inactive, unload task
+                    self.unload(state, backend, turbo_tasks);
+                    GcResult::Unloaded
                 }
-
-                // shrinking memory and dropping cells
-                state.aggregation_node.shrink_to_fit();
-                state.output.dependent_tasks.shrink_to_fit();
-                state.cells.shrink_to_fit();
-                for cells in state.cells.values_mut() {
-                    cells.shrink_to_fit();
-                    for cell in cells.iter_mut() {
-                        cells_to_drop.extend(cell.gc_content());
-                        cell.shrink_to_fit();
-                    }
-                }
-
-                drop(state);
-
-                // Dropping cells outside of the lock
-                drop(cells_to_drop);
-
-                true
             }
             TaskMetaStateWriteGuard::Partial(mut state) => {
                 state.aggregation_node.shrink_to_fit();
-                false
+                GcResult::Unloaded
             }
-            _ => false,
+            TaskMetaStateWriteGuard::Unloaded(_) => GcResult::Unloaded,
+            TaskMetaStateWriteGuard::TemporaryFiller => unreachable!(),
         }
     }
 
@@ -1568,8 +1644,6 @@ impl Task {
         }
     }
 
-    // TODO not used yet, but planned
-    #[allow(dead_code)]
     fn unload(
         &self,
         mut full_state: FullTaskWriteGuard<'_>,
@@ -1645,6 +1719,8 @@ impl Task {
         } else {
             None
         };
+
+        aggregation_node.shrink_to_fit();
 
         // TODO aggregation_node
         let unset = false;
