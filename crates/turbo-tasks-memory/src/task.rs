@@ -437,6 +437,7 @@ pub enum GcResult {
     Stale,
     ContentDropped,
     Unloaded,
+    AlreadyUnloaded,
 }
 
 impl Task {
@@ -1629,9 +1630,9 @@ impl Task {
             }
             TaskMetaStateWriteGuard::Partial(mut state) => {
                 state.aggregation_node.shrink_to_fit();
-                GcResult::Unloaded
+                GcResult::AlreadyUnloaded
             }
-            TaskMetaStateWriteGuard::Unloaded(_) => GcResult::Unloaded,
+            TaskMetaStateWriteGuard::Unloaded(_) => GcResult::AlreadyUnloaded,
             TaskMetaStateWriteGuard::TemporaryFiller => unreachable!(),
         }
     }
