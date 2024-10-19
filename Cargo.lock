@@ -217,9 +217,9 @@ dependencies = [
 
 [[package]]
 name = "async-graphql"
-version = "7.0.7"
+version = "7.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b76aba2f176af685c2229633881a3adeae51f87ae1811781e73910b7001c93e"
+checksum = "0ba6d24703c5adc5ba9116901b92ee4e4c0643c01a56c4fd303f3818638d7449"
 dependencies = [
  "async-graphql-derive",
  "async-graphql-parser",
@@ -230,6 +230,7 @@ dependencies = [
  "bytes",
  "fast_chemail",
  "fnv",
+ "futures-timer",
  "futures-util",
  "handlebars",
  "http 1.1.0",
@@ -268,9 +269,9 @@ dependencies = [
 
 [[package]]
 name = "async-graphql-derive"
-version = "7.0.7"
+version = "7.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72e2e26a6b44bc61df3ca8546402cf9204c28e30c06084cc8e75cd5e34d4f150"
+checksum = "a94c2d176893486bd37cd1b6defadd999f7357bf5804e92f510c08bcf16c538f"
 dependencies = [
  "Inflector",
  "async-graphql-parser",
@@ -285,9 +286,9 @@ dependencies = [
 
 [[package]]
 name = "async-graphql-parser"
-version = "7.0.7"
+version = "7.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f801451484b4977d6fe67b29030f81353cabdcbb754e5a064f39493582dac0cf"
+checksum = "79272bdbf26af97866e149f05b2b546edb5c00e51b5f916289931ed233e208ad"
 dependencies = [
  "async-graphql-value",
  "pest",
@@ -297,9 +298,9 @@ dependencies = [
 
 [[package]]
 name = "async-graphql-value"
-version = "7.0.7"
+version = "7.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69117c43c01d81a69890a9f5dd6235f2f027ca8d1ec62d6d3c5e01ca0edb4f2b"
+checksum = "ef5ec94176a12a8cbe985cd73f2e54dc9c702c88c766bdef12f1f3a67cedbee1"
 dependencies = [
  "bytes",
  "indexmap 2.2.6",
@@ -1974,6 +1975,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38d84fa142264698cdce1a9f9172cf383a0c82de1bddcf3092901442c4097004"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+
+[[package]]
 name = "futures-util"
 version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2385,7 +2392,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.4.9",
+ "socket2 0.5.6",
  "tokio",
  "tower-service",
  "tracing",
@@ -5605,9 +5612,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-stream"
-version = "0.1.15"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "267ac89e0bec6e691e5813911606935d77c476ff49024f98abcea3e7b15e37af"
+checksum = "4f4e6ce100d0eb49a2734f8c0812bcd324cf357d21810932c5df6b96ef2b86f1"
 dependencies = [
  "futures-core",
  "pin-project-lite",
@@ -5687,9 +5694,9 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.12.2"
+version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f6ba989e4b2c58ae83d862d3a3e27690b6e3ae630d0deb59f3697f32aa88ad"
+checksum = "877c5b330756d856ffcc4553ab34a5684481ade925ecc54bcd1bf02b1d0d4d52"
 dependencies = [
  "async-stream",
  "async-trait",
